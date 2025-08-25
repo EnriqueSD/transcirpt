@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Transcriptor YouTube</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b0b0b; --fg:#eaeaea; --muted:#9aa0a6; --acc:#64b5f6; }
+    body{background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{max-width:900px;margin:40px auto;padding:24px;border:1px solid #222;border-radius:16px;background:#111}
+    h1{font-size:22px;margin:0 0 16px}
+    label{display:block;margin:12px 0 6px;color:var(--muted)}
+    input,select,button,textarea{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #2a2a2a;background:#0f0f0f;color:var(--fg)}
+    button{cursor:pointer;border-color:#2d2d2d}
+    button.primary{background:#1a1a1a}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:end}
+    .pill{display:inline-block;padding:4px 10px;border:1px solid #2a2a2a;border-radius:999px;font-size:12px;color:var(--muted);margin-right:6px}
+    .meta{display:flex;gap:8px;align-items:center;margin:16px 0}
+    .list{margin-top:16px;border-top:1px solid #1e1e1e}
+    .seg{padding:10px 0;border-bottom:1px solid #1e1e1e}
+    .t{font-variant-numeric:tabular-nums;color:#c7c7c7}
+    .err{color:#ff6b6b;margin-top:10px}
+    .ok{color:#8bc34a}
+    .actions{display:flex;gap:8px;margin-top:10px}
+    .small{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Transcripción de YouTube</h1>
+    <label for="url">URL del video</label>
+    <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+
+    <label for="langs">Idiomas preferidos (orden de prioridad)</label>
+    <input id="langs" type="text" value="es,en" />
+
+    <div class="row" style="margin-top:10px">
+      <button id="go" class="primary">Obtener transcripción</button>
+      <button id="dl-json" disabled>Descargar JSON</button>
+      <button id="dl-srt" disabled>Descargar SRT</button>
+    </div>
+
+    <div id="status" class="small" style="margin-top:8px"></div>
+
+    <div class="meta" id="meta" style="display:none">
+      <span class="pill" id="pill-lang"></span>
+      <span class="pill" id="pill-source"></span>
+      <span class="pill" id="pill-count"></span>
+    </div>
+
+    <div id="list" class="list"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status'), listEl = $('list');
+    let lastResult = null;
+
+    function msToTS(ms, forSrt=false){
+      const z = (n, w=2)=> String(n).padStart(w,'0');
+      let s = Math.floor(ms/1000), m = Math.floor(s/60), h = Math.floor(m/60);
+      const msR = ms % 1000, sR = s % 60, mR = m % 60;
+      if (forSrt) return `${z(h)}:${z(mR)}:${z(sR)},${String(msR).padStart(3,'0')}`;
+      return (h?`${h}:`:'') + `${z(mR)}:${z(sR)}.${String(msR).padStart(3,'0')}`;
+    }
+
+    function render(segments){
+      listEl.innerHTML = segments.map(s => `
+        <div class="seg">
+          <div class="t">${msToTS(s.start)} → ${msToTS(s.end)}</div>
+          <div>${s.text}</div>
+        </div>
+      `).join('');
+    }
+
+    function toSRT(segments){
+      return segments.map((s, i) =>
+        `${i+1}\n${msToTS(s.start, true)} --> ${msToTS(s.end, true)}\n${s.text}\n`
+      ).join('\n');
+    }
+
+    function download(filename, text){
+      const blob = new Blob([text], {type:'text/plain;charset=utf-8'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    async function getTranscript(){
+      const url = $('url').value.trim();
+      const langs = $('langs').value.trim() || 'es,en';
+      if (!url) { statusEl.textContent = 'Pon una URL'; return; }
+
+      $('go').disabled = true; $('dl-json').disabled = true; $('dl-srt').disabled = true;
+      statusEl.textContent = 'Consultando…'; statusEl.className = 'small';
+      listEl.innerHTML = ''; $('meta').style.display = 'none';
+
+      try {
+        const res = await fetch(`/api/transcript?url=${encodeURIComponent(url)}&langs=${encodeURIComponent(langs)}`);
+        if (!res.ok) {
+          const err = await res.json().catch(()=>({error:`HTTP ${res.status}`}));
+          throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        lastResult = data;
+
+        $('pill-lang').textContent = `Idioma: ${data.language || 'n/d'}`;
+        $('pill-source').textContent = `Fuente: ${data.source}`;
+        $('pill-count').textContent = `Segmentos: ${data.segments.length}`;
+        $('meta').style.display = 'flex';
+
+        render(data.segments);
+        statusEl.textContent = 'Listo.'; statusEl.className = 'ok';
+
+        $('dl-json').disabled = false;
+        $('dl-srt').disabled = false;
+      } catch (e) {
+        statusEl.textContent = `Error: ${e.message}`; statusEl.className = 'err';
+      } finally {
+        $('go').disabled = false;
+      }
+    }
+
+    $('go').addEventListener('click', getTranscript);
+    $('dl-json').addEventListener('click', ()=> {
+      if (!lastResult) return;
+      download('transcript.json', JSON.stringify(lastResult, null, 2));
+    });
+    $('dl-srt').addEventListener('click', ()=> {
+      if (!lastResult) return;
+      download('transcript.srt', toSRT(lastResult.segments));
+    });
+  </script>
+</body>
+</html>
